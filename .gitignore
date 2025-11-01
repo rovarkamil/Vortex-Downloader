@@ -39,5 +39,7 @@ Thumbs.db
 
 # Project specific
 *.log
+logs/
+debug_screenshots/
 *.exe
 
