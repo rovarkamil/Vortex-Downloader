@@ -187,6 +187,67 @@ class VortexAutoDownloader:
             logger.error(f"Error clicking 'Download manually': {e}")
             return False
     
+    def check_download_started(self) -> bool:
+        """
+        Checks if the browser tab shows "Your download has started" message.
+        
+        Returns:
+            True if download confirmation page is detected, False otherwise
+        """
+        try:
+            screenshot = ImageGrab.grab()
+            screenshot_np = np.array(screenshot)
+            
+            # Look for the download confirmation page
+            # The message "Your download has started" is usually in the center of the page
+            height, width, _ = screenshot_np.shape
+            
+            # Check center area of the screen where the message appears
+            center_y_start = int(height * 0.30)
+            center_y_end = int(height * 0.50)
+            center_x_start = int(width * 0.25)
+            center_x_end = int(width * 0.75)
+            
+            # Simple check: The download confirmation page has a lot of white text on dark background
+            # Look for areas with bright text (high brightness values)
+            search_region = screenshot_np[center_y_start:center_y_end, center_x_start:center_x_end]
+            search_gray = cv2.cvtColor(search_region, cv2.COLOR_RGB2GRAY)
+            
+            # Count bright pixels (likely text) - download confirmation has large white text
+            bright_pixels = np.sum(search_gray > 200)  # Very bright pixels (white text)
+            total_pixels = search_gray.size
+            bright_ratio = bright_pixels / total_pixels
+            
+            # The "Your download has started" page typically has more bright text
+            # than a regular download page
+            if bright_ratio > 0.15:  # Threshold for download confirmation page
+                logger.info("Detected download confirmation page ('Your download has started')")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Error checking download status: {e}")
+            return False
+    
+    def close_browser_tab(self) -> bool:
+        """
+        Closes the current browser tab using keyboard shortcut (Ctrl+W).
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.info("Closing browser tab...")
+            # Use Ctrl+W to close the current tab
+            pyautogui.hotkey('ctrl', 'w')
+            time.sleep(0.5)  # Wait for tab to close
+            logger.info("Browser tab closed")
+            return True
+        except Exception as e:
+            logger.error(f"Error closing browser tab: {e}")
+            return False
+    
     def click_slow_download(self) -> bool:
         """
         Clicks the 'Slow download' button in the browser.
@@ -275,7 +336,22 @@ class VortexAutoDownloader:
             pyautogui.mouseUp(button='left')
             logger.info(f"Clicked 'Slow download' at ({click_x}, {click_y})")
             
-            time.sleep(1)
+            # Wait for download confirmation page to appear and check multiple times
+            # (in case page takes a moment to load)
+            if config.AUTO_CLOSE_DOWNLOAD_TABS:
+                max_checks = 3
+                for attempt in range(max_checks):
+                    time.sleep(config.DOWNLOAD_CONFIRMATION_WAIT / max_checks)
+                    if self.check_download_started():
+                        logger.info("Download confirmation page detected!")
+                        time.sleep(0.5)  # Brief pause before closing
+                        self.close_browser_tab()
+                        break
+                    elif attempt < max_checks - 1:
+                        logger.debug(f"Download confirmation not detected yet (attempt {attempt + 1}/{max_checks})...")
+                else:
+                    logger.debug("Download confirmation page not detected after all attempts, keeping tab open")
+            
             return True
             
         except Exception as e:

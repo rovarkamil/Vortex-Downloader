@@ -5,6 +5,7 @@ CHECK_INTERVAL = 1  # How often to check for dialogs (seconds)
 COOLDOWN_PERIOD = 10  # Time to wait between processing downloads (seconds)
 BROWSER_LOAD_WAIT = 3  # Time to wait for browser page to load (seconds)
 BUTTON_CLICK_DELAY = 2  # Delay after clicking buttons (seconds)
+DOWNLOAD_CONFIRMATION_WAIT = 2  # Wait after clicking download button for confirmation page (seconds)
 
 # Detection Settings
 CONFIDENCE_THRESHOLD = 0.8  # Image matching confidence (0.0 to 1.0)
@@ -53,6 +54,10 @@ BUTTON_THRESHOLD_VALUE = 80  # Pixels darker than this are considered button are
 
 # Window Title Keywords
 VORTEX_WINDOW_TITLE = "Download mod"
+
+# Browser Tab Management
+AUTO_CLOSE_DOWNLOAD_TABS = True  # Automatically close browser tabs after download starts
+                                  # This prevents too many tabs from opening
 
 # Debug Settings
 SAVE_DEBUG_SCREENSHOTS = True  # Save screenshots for debugging
