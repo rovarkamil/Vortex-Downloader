@@ -36,6 +36,7 @@ class VortexAutoDownloader:
         self.running = False
         self.check_interval = config.CHECK_INTERVAL
         self.confidence = config.CONFIDENCE_THRESHOLD
+        self.first_download_done = False  # Track if we've processed the first download
         
         # Failsafe: move mouse to top-left corner to stop
         pyautogui.FAILSAFE = config.PYAUTOGUI_FAILSAFE
@@ -190,6 +191,7 @@ class VortexAutoDownloader:
     def check_download_started(self) -> bool:
         """
         Checks if the browser tab shows "Your download has started" message.
+        Uses multiple detection methods for better reliability.
         
         Returns:
             True if download confirmation page is detected, False otherwise
@@ -198,54 +200,137 @@ class VortexAutoDownloader:
             screenshot = ImageGrab.grab()
             screenshot_np = np.array(screenshot)
             
-            # Look for the download confirmation page
-            # The message "Your download has started" is usually in the center of the page
             height, width, _ = screenshot_np.shape
             
-            # Check center area of the screen where the message appears
-            center_y_start = int(height * 0.30)
-            center_y_end = int(height * 0.50)
-            center_x_start = int(width * 0.25)
-            center_x_end = int(width * 0.75)
+            # Method 1: Check for the large white text in center (more relaxed threshold)
+            center_y_start = int(height * 0.25)
+            center_y_end = int(height * 0.55)
+            center_x_start = int(width * 0.20)
+            center_x_end = int(width * 0.80)
             
-            # Simple check: The download confirmation page has a lot of white text on dark background
-            # Look for areas with bright text (high brightness values)
             search_region = screenshot_np[center_y_start:center_y_end, center_x_start:center_x_end]
             search_gray = cv2.cvtColor(search_region, cv2.COLOR_RGB2GRAY)
             
-            # Count bright pixels (likely text) - download confirmation has large white text
-            bright_pixels = np.sum(search_gray > 200)  # Very bright pixels (white text)
+            # Lower threshold - look for bright pixels (white text)
+            bright_pixels = np.sum(search_gray > 180)  # Lowered from 200
             total_pixels = search_gray.size
             bright_ratio = bright_pixels / total_pixels
             
-            # The "Your download has started" page typically has more bright text
-            # than a regular download page
-            if bright_ratio > 0.15:  # Threshold for download confirmation page
-                logger.info("Detected download confirmation page ('Your download has started')")
+            # Method 2: Check if there's a download file box (dark box with white text)
+            # The confirmation page has a file name box at the top
+            file_box_region = screenshot_np[int(height * 0.15):int(height * 0.30), 
+                                           int(width * 0.20):int(width * 0.80)]
+            file_box_gray = cv2.cvtColor(file_box_region, cv2.COLOR_RGB2GRAY)
+            
+            # Look for medium brightness (the dark box with text inside)
+            medium_bright = np.sum((file_box_gray > 100) & (file_box_gray < 200))
+            file_box_ratio = medium_bright / file_box_gray.size
+            
+            # Combined detection: either bright text OR file box
+            detected = bright_ratio > 0.08 or file_box_ratio > 0.10  # Lower thresholds
+            
+            if detected:
+                logger.info(f"Download confirmation detected (bright: {bright_ratio:.2%}, file_box: {file_box_ratio:.2%})")
                 return True
             
+            logger.debug(f"Not confirmed page (bright: {bright_ratio:.2%}, file_box: {file_box_ratio:.2%})")
             return False
             
         except Exception as e:
             logger.debug(f"Error checking download status: {e}")
             return False
     
-    def close_browser_tab(self) -> bool:
+    def close_browser_tab(self, is_first_download: bool = False) -> bool:
         """
         Closes the current browser tab using keyboard shortcut (Ctrl+W).
+        Uses multiple methods to ensure the browser is focused.
+        
+        Args:
+            is_first_download: If True, this is the first download - keep the tab open
         
         Returns:
-            True if successful, False otherwise
+            True if successful, False if skipped
         """
         try:
-            logger.info("Closing browser tab...")
-            # Use Ctrl+W to close the current tab
-            pyautogui.hotkey('ctrl', 'w')
-            time.sleep(0.5)  # Wait for tab to close
-            logger.info("Browser tab closed")
+            # First download: Keep the tab open, don't close it
+            if is_first_download:
+                logger.info("First download - keeping this tab open (browser will stay ready)")
+                self.first_download_done = True
+                return False
+            
+            # All subsequent downloads: Close the tab
+            logger.info("Attempting to close browser tab...")
+            
+            # First, find and save Vortex window handle so we can restore it later
+            def find_vortex_hwnd():
+                """Find Vortex window handle."""
+                def callback(hwnd, windows):
+                    if win32gui.IsWindowVisible(hwnd):
+                        window_title = win32gui.GetWindowText(hwnd).lower()
+                        if 'vortex' in window_title:
+                            windows.append(hwnd)
+                
+                windows = []
+                win32gui.EnumWindows(callback, windows)
+                return windows[0] if windows else None
+            
+            vortex_hwnd = find_vortex_hwnd()
+            
+            # Method 1: Find browser window and bring it to front (briefly)
+            browser_titles = ['chrome', 'firefox', 'edge', 'opera', 'brave', 'nexusmods', 'google chrome']
+            
+            def find_browser_hwnd():
+                """Find browser window handle."""
+                def callback(hwnd, windows):
+                    if win32gui.IsWindowVisible(hwnd):
+                        window_title = win32gui.GetWindowText(hwnd).lower()
+                        for title in browser_titles:
+                            if title in window_title:
+                                windows.append(hwnd)
+                
+                windows = []
+                win32gui.EnumWindows(callback, windows)
+                return windows[0] if windows else None
+            
+            browser_hwnd = find_browser_hwnd()
+            if browser_hwnd:
+                try:
+                    # Briefly bring browser to front
+                    win32gui.ShowWindow(browser_hwnd, win32con.SW_RESTORE)
+                    win32gui.SetForegroundWindow(browser_hwnd)
+                    logger.debug(f"Brought browser window to front temporarily")
+                    time.sleep(0.3)  # Brief pause for focus
+                except Exception as e:
+                    logger.debug(f"Could not bring browser to front: {e}")
+            
+            # Method 2: Send Ctrl+W to close the current tab
+            logger.info("Sending Ctrl+W to close tab...")
+            
+            # Hold Ctrl and press W
+            pyautogui.keyDown('ctrl')
+            time.sleep(0.1)
+            pyautogui.press('w')
+            time.sleep(0.1)
+            pyautogui.keyUp('ctrl')
+            
+            time.sleep(0.5)  # Brief wait for tab to close
+            
+            # Method 3: Immediately restore Vortex to front
+            if vortex_hwnd:
+                try:
+                    win32gui.ShowWindow(vortex_hwnd, win32con.SW_RESTORE)
+                    win32gui.SetForegroundWindow(vortex_hwnd)
+                    logger.debug("Restored Vortex window to front")
+                    time.sleep(0.2)
+                except Exception as e:
+                    logger.debug(f"Could not restore Vortex to front: {e}")
+            
+            logger.info("✓ Browser tab closed, Vortex restored to front")
+            
             return True
+            
         except Exception as e:
-            logger.error(f"Error closing browser tab: {e}")
+            logger.error(f"Error closing browser tab: {e}", exc_info=True)
             return False
     
     def click_slow_download(self) -> bool:
@@ -336,21 +421,26 @@ class VortexAutoDownloader:
             pyautogui.mouseUp(button='left')
             logger.info(f"Clicked 'Slow download' at ({click_x}, {click_y})")
             
-            # Wait for download confirmation page to appear and check multiple times
-            # (in case page takes a moment to load)
+            # Close the browser tab after download starts
+            # First download: Keep tab open. Subsequent downloads: Close tab.
             if config.AUTO_CLOSE_DOWNLOAD_TABS:
-                max_checks = 3
-                for attempt in range(max_checks):
-                    time.sleep(config.DOWNLOAD_CONFIRMATION_WAIT / max_checks)
-                    if self.check_download_started():
-                        logger.info("Download confirmation page detected!")
-                        time.sleep(0.5)  # Brief pause before closing
-                        self.close_browser_tab()
-                        break
-                    elif attempt < max_checks - 1:
-                        logger.debug(f"Download confirmation not detected yet (attempt {attempt + 1}/{max_checks})...")
+                logger.info("Waiting for download to start...")
+                
+                # Wait a bit for the download to actually start
+                time.sleep(config.TAB_CLOSE_DELAY)  # Give download time to initiate
+                
+                # Check if this is the first download
+                is_first = not self.first_download_done
+                
+                if is_first:
+                    logger.info("First download - keeping tab open")
                 else:
-                    logger.debug("Download confirmation page not detected after all attempts, keeping tab open")
+                    logger.info("Subsequent download - closing confirmation tab")
+                
+                self.close_browser_tab(is_first_download=is_first)
+                
+                # Optionally check if it actually closed (for debugging)
+                time.sleep(0.5)
             
             return True
             
